@@ -206,9 +206,9 @@ otu_Sel_w<-otu_Sel_w[,!(grepl( "rejected", colnames(otu_Sel_w)))]
 
  Filter species with too few sightings 
 ```{r, warning=FALSE, echo=FALSE, message=FALSE}
-otu_Sel_w<-otu_Sel_w[,c(TRUE, colSums(otu_Sel_w[,-1]>0, na.rm = TRUE)>MinSightings)] 
+otu_Sel_w<-otu_Sel_w[,c(TRUE, colSums(otu_Sel_w[,-1]>0, na.rm = TRUE) > MinSightings)] 
 otu_Sel_w$refstation_no<-as.factor(otu_Sel_w$refstation_no)
-RightCoords<-otu_Sel[match(otu_Sel_w$refstation_no,otu_Sel$refstation_no),c('longitude_start', 'latitude_start')]
+#CorrectCoords<-otu_Sel[match(otu_Sel_w$refstation_no,otu_Sel$refstation_no),c('longitude_start', 'latitude_start')]
 ```
 
 ## -Environmental data 
@@ -295,6 +295,7 @@ P_gravel
 ```
 
 ### Data cleaning
+This will reduce again the number of stations, thus some species might end up with fewer then MinSightings sightings. so run it again
 ```{r}
 joinedDat<- left_join(otu_Sel_w,env_orig, by="refstation_no")
 
@@ -312,6 +313,10 @@ temp_dates<-otu_orig %>%
 temp_dates$refstation_no<-as.factor(temp_dates$refstation_no)
 
 envCompl<- left_join(envCompl,temp_dates, by="refstation_no")
+
+otuCompl[is.na(otuCompl)]<-0
+#otuCompl<-otuCompl[,c(TRUE, colSums(otu_Sel_w[,-1]>0, na.rm = TRUE) > MinSightings)] 
+
 ```
 
 
@@ -586,9 +591,9 @@ env$CoarseSedim<-rowSums(env[,c('gravel','cobB','rock')])
 # SAVE files
 ```{r}
 if(FALSE){
-  #setwd(paste0("C:/Users/",HIusername, "/Documents/Projects/MAREANO_Grabs/"))
+  setwd(paste0("C:/Users/",HIusername, "/Documents/Projects/MAREANO_Grabs/"))
   save(phylo_tree, file = paste0("phylo_tree_Grabs.rda"))
-  save(Branch_col, file = paste0("temp/Branch_col_Grabs_.rda"))
+  save(Branch_col, file = paste0("Branch_col_Grabs_.rda"))
   save(otu, file = "otu_Grabs.rda")
   save(env, file = "env_Grabs.rda")
 }
