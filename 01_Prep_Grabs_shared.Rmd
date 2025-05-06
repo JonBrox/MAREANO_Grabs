@@ -1,0 +1,593 @@
+---
+title: "Prepare grabs data"
+output: html_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+# PACKAGES
+```{r, message=FALSE}
+#https://discourse.mc-stan.org/t/brms-installation-problems-on-ubuntu-22-04-1-lts/30084 
+library(dplyr)
+library(vegan)
+library(openxlsx)
+library(ggplot2)
+library(psych)
+library(stringr)
+library(pals)
+library(Hmsc)
+library(rlang)
+library(reshape2)
+library(sp)
+library(readxl)
+library(stringr)
+library(raster)
+library(lubridate)
+library(tidyverse)
+library(ape)
+library(data.tree)
+```
+
+# Minumim species occurrence thresholds
+```{r}
+MinOTUs<- 0 # Minimum number of species in a stations for it to be valid
+MinSightings<- 14 # Minimum number of times an OTU has been sampled
+```
+
+# LOAD DATA
+## -Biological data
+Loads all physical data but will later subsets the gear of interest, i.e., defined by "GEAR" 
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+WhereRun<-"Server"
+if(WhereRun == "Locally"){tempPath<-"C:/Users/a39495/OneDrive - Havforskningsinstituttet/General/inputs/grab/"}
+if(WhereRun == "Server"){  tempPath<-"U:/Mareano/ARTSOPPARBEIDING/"}
+
+Grab_temp<-read_excel(paste0(tempPath,"ArterPunchetPr20250502_totalopparbeidet_tom_2024.xlsx"), sheet = "Grab", col_names = TRUE)
+
+otu_orig<-Grab_temp
+```
+
+
+Organize: otu_orig --> otu_Sel
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+#Create unique station/replicate identifiers
+otu_orig$SampID <-paste(otu_orig$refstation_no, otu_orig$station_no, otu_orig$sample_no, sep = "_")
+
+#Remove unnecessary columns
+otu_orig<-otu_orig %>% 
+  dplyr::select(-c(field_notes, quality_comment...64, quality_comment...65, loader_info, lab_notes, preservation_type,preservation_type, abundance_data_quality,fraction_type, identified_by, photo_character, author, wup_gr10, wup_gr20, wup_gr25))
+
+#Subset 
+otu_orig<-otu_orig[otu_orig$sieve_mesh_size != 0.5, ]
+
+#Sites with 0s or NA wwg tend to refer to presence that are very small or include only fragments of the species. While small, these could be relevant when examined as densities per 100m2, and will also be important when analysing the data as presence/absence, since a presence is a presence no matter how small. 
+#This gives the smallest wwg, i.e., 0.00001, to all 0s and NAs in the data
+otu_orig[is.na(otu_orig$wwg_100m2) | otu_orig$wwg_100m2 == 0 ,"wwg_100m2"] <-100 * 0.00001 *100*100*100/(otu_orig[is.na(otu_orig$wwg_lab) | otu_orig$wwg_100m2 == 0 ,"subsample_percent_field"] * otu_orig[is.na(otu_orig$wwg_lab) | otu_orig$wwg_100m2 == 0 ,"subsample_percent_sort"] * otu_orig[is.na(otu_orig$wwg_lab) | otu_orig$wwg_100m2 == 0 ,"subsample_percent_lab"] * otu_orig[is.na(otu_orig$wwg_lab) | otu_orig$wwg_100m2 == 0 ,"opening"])
+```
+
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+#Remove coarse taxonomies...
+# ...and the Tromsøflaket cruise (which has historically given problems)
+otu_Sel<-otu_orig %>% 
+  filter(!(taxa_rank %in% c("Kingdom", "Phylum", "Subphylum", "Superclass", "Class", "Parvorder","Tribe")) & # Too broad
+           cruise_no != 2006612) 
+
+# Summing species abundance by replicate
+otu_Sel<-otu_Sel %>%
+  dplyr::group_by(SampID, aphia_id) %>%
+  dplyr::mutate(wwg_100m2_RStation = sum(wwg_100m2, na.rm = TRUE)) #wwg_100m2
+
+ggplot(otu_Sel, aes(longitude_start, latitude_start, color =equipment_name))+
+  geom_point()+
+  theme_classic()
+```
+
+Averages the densities by reference station and transforms to wide data format
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+otu_Sel_w<-otu_Sel %>%
+  dplyr::select(c(refstation_no, aphia_id, wwg_100m2_RStation)) %>%
+  unique() %>%
+  dcast(., refstation_no ~ aphia_id, value.var = "wwg_100m2_RStation", fun.aggregate = mean, na.rm = TRUE)
+
+otu_Sel_w<-otu_Sel_w[, colnames(otu_Sel_w) != "NA"]
+```
+
+
+```{r}
+load("Taxonomic_DF_grabs_2025.rda")
+
+Taxonomic_DF_Groups<-Taxonomic_DF
+for(i in 1:nrow(Taxonomic_DF_Groups)){
+  AddTo<-Taxonomic_DF_Groups[i, 'Species']
+  
+  tempdf<-Taxonomic_DF_Groups[ Taxonomic_DF_Groups[,which(colnames(Taxonomic_DF_Groups) == Taxonomic_DF_Groups[i,2])] == Taxonomic_DF_Groups[i,which(colnames(Taxonomic_DF_Groups) == Taxonomic_DF_Groups[i,2])],]
+  tempdf[tempdf$Species != AddTo, paste0("AddTo",Taxonomic_DF_Groups[i,2])]<- paste(Taxonomic_DF_Groups[i,which(colnames(Taxonomic_DF_Groups) == Taxonomic_DF_Groups[i,2])])
+  if(nrow(tempdf) < 2){next}
+  Taxonomic_DF_Groups[rownames(tempdf),paste0("AddTo",Taxonomic_DF_Groups[i,2])]<- tempdf[, paste0("AddTo",Taxonomic_DF_Groups[i,2])]
+}
+
+# Ugly solution but it works... maybe revisit at some point
+Taxonomic_DF_Groups$Species <- as.character(Taxonomic_DF_Groups$Species)
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID == 1365, "AddToClass"]<-"Octocorallia"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID == 1365, "Species"]<-"Octocorallia_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(117703, 156149), "AddToSpecies"]<-"Lafoea_dumosa"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(117703), "Species"]<-"Lafoea_dumosa_rejected1"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(156149), "Species"]<-"Lafoea_dumosa_rejected2"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(117975), "AddToSpecies"]<-"Ptychogena_crocea"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(117975), "Species"]<-"Ptychogena_crocea_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(174151), "AddToGenus"]<-"Myriochele"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(174151), "Species"]<-"Myriochele_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(334697), "AddToSpecies"]<-"Rhamphobrachium_-Spinigerium-_brevibrachiatum"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(334697), "Species"]<-"Rhamphobrachium_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(334864), "AddToSpecies"]<-"Sthenelais_jeffreysi"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(334864), "Species"]<-"Sthenelais_jeffreysi_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(335562), "AddToSpecies"]<-"Notoproctus_oculatu"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(335562), "Species"]<-"Notoproctus_oculatu_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(341077 ), "AddToSpecies"]<-"Chirimia_biceps"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(341077), "Species"]<-"Chirimia_biceps_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(566157), "AddToSpecies"]<-"Melanella_polita"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(566157), "Species"]<-"Melanella_polita_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(246029), "AddToSpecies"]<-"Spirotropis_confusa"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(246029), "Species"]<-"Spirotropis_confusa_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(129247), "AddToGenus"]<-"Kirkegaardia"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(129247), "Species"]<-"Kirkegaardia_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(129247), "AddToGenus"]<-"Kirkegaardia"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(129247), "Species"]<-"Kirkegaardia_rejected"
+
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(131922), "AddToGenus"]<-"Haliclona"
+Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID %in% c(131922), "Species"]<-"Haliclona_rejected"
+```
+
+Sums observations of finer resolutions to the higher resolutions
+```{r}
+otu_Sel_w<-otu_Sel_w[,colnames(otu_Sel_w) %in% c("refstation_no" , Taxonomic_DF_Groups$AphiaID)]
+
+# Modifying OTU names to remove spaces and brackets (they can give problems later with some models and functions)
+temp_sp <-gsub(";", ".", Taxonomic_DF_Groups$Species)
+temp_sp <-gsub("[ /]", "_", temp_sp)
+temp_sp <-gsub("[(]", "-", temp_sp)
+temp_sp <-gsub("[)]", "-", temp_sp)
+Taxonomic_DF_Groups$Species<-ifelse(str_sub(temp_sp,-2,-1) == "sp", paste0(temp_sp, "."), temp_sp)  
+
+for(i in 2:ncol(otu_Sel_w)){
+  TargetSp_name <-Taxonomic_DF_Groups[Taxonomic_DF_Groups$AphiaID == colnames(otu_Sel_w)[i], 'Species']
+  colnames(otu_Sel_w)[i]<-TargetSp_name
+}
+```
+
+
+```{r}
+otu_Sel_w_Sum<-otu_Sel_w
+for(i in 2:ncol(otu_Sel_w_Sum)){
+  TargetSp<-colnames(otu_Sel_w_Sum)[i]
+  
+  temp_sp<-Taxonomic_DF_Groups %>%
+    dplyr::select(which(colnames(Taxonomic_DF_Groups) == "Species"):ncol(Taxonomic_DF_Groups)) %>% 
+    filter_all(any_vars(. %in% c(TargetSp)))
+  
+  OtherSp<-temp_sp$Species[temp_sp$Species != TargetSp]
+  if(length(OtherSp) == 0){next}
+  
+  temp_sp <-gsub(";", ".", c(colnames(otu_Sel_w_Sum)[i],paste(OtherSp)))
+  temp_sp <-gsub("[ /]", "_", temp_sp)
+  temp_sp<-ifelse(str_sub(temp_sp,-2,-1) == "sp", paste0(temp_sp, "."), temp_sp)  
+  
+  otu_Sel_w_Sum[,paste0(TargetSp, "_Summed")]<-rowSums(otu_Sel_w_Sum[,which(colnames(otu_Sel_w_Sum) %in% temp_sp)], na.rm = TRUE)
+}
+# Taxonomic resolutions summed dataset 
+
+# select otus with summed densities
+# Expection: I think that anything noted Pennatuloidea is most likely not a Kophobelemnon, so ot summing it. 
+otu_Sel_w_Sum<-otu_Sel_w_Sum[, colnames(otu_Sel_w_Sum) != "Pennatuloidea_Summed"]
+tempdf<-otu_Sel_w_Sum[,which(!(colnames(otu_Sel_w_Sum) %in% colnames(otu_Sel_w)))]
+
+colnames(tempdf)<- str_sub(colnames(tempdf),-str_length(colnames(tempdf)) ,-8)
+# updates otu with summed densities
+otu_Sel_w<-otu_Sel_w[, which(!(colnames(otu_Sel_w) %in% colnames(tempdf)))]
+otu_Sel_w<-cbind(otu_Sel_w, tempdf)
+
+otu_Sel_w<-otu_Sel_w[,!(grepl( "rejected", colnames(otu_Sel_w)))]
+```
+
+ Filter species with too few sightings 
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+otu_Sel_w<-otu_Sel_w[,c(TRUE, colSums(otu_Sel_w[,-1]>0, na.rm = TRUE)>MinSightings)] 
+otu_Sel_w$refstation_no<-as.factor(otu_Sel_w$refstation_no)
+RightCoords<-otu_Sel[match(otu_Sel_w$refstation_no,otu_Sel$refstation_no),c('longitude_start', 'latitude_start')]
+```
+
+## -Environmental data 
+```{r, warning=FALSE}
+#load(paste0(tempPath,"new_env_orig_15-01-24.rda")) # from "Extract_EnvData.R"
+load("C:/Users/a39495/OneDrive - Havforskningsinstituttet/General/inputs/grab/new_env_orig_02-04-25.rda") 
+
+env_orig$refstation_no<-as.factor(str_split_fixed(env_orig$SampID, "_",3)[,1])
+
+#Subset the relevat ref stations
+env_orig<-env_orig[env_orig$refstation_no %in% otu_Sel_w$refstation_no, ]
+
+#get average values of r stations with replicates with different values
+env_orig<-env_orig %>%
+  dplyr::select(-SampID) %>%
+  group_by(refstation_no) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+```
+
+Updating sediment data
+
+Whenever we have direct sediment information taken directly from the grab, we compare it to the sediment maps. 
+When the values differ substancially, we update the "mapped-sediment" code to better reflec what whas actually observed at the site. 
+```{r, warning=FALSE}
+Bio_envdat<-unique(otu_orig[c("refstation_no", "bottom_temperature", "bottom_salinity", "TOM_percent", "TOC_percent", "waterconsist_percent", "grainsize_percent", "percent_clay", "percent_silt", "percent_sand", "percent_gravel", "bot_aver_depth")])
+Bio_envdat$refstation_no<-as.factor(Bio_envdat$refstation_no)
+
+Bio_envdat<-Bio_envdat %>%
+  group_by(refstation_no) %>%
+  summarise(across(everything(), mean, na.rm = TRUE))
+
+env_orig<- left_join(env_orig,Bio_envdat, by="refstation_no")
+
+cselect<-c("SedimCode", "mud_2", "sand_2", "gravel_2", "cobB_2", "rock_2")
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(1350,1776,311,259,818,1812,1872,1425,1225,1676,232,1698,1965,1823,1709,882,1180,682,1349,1461,1416,1165,1261,531, 1865,782,879,786,749), cselect]<-env_orig[!is.na(env_orig$SedimCode) &  env_orig$SedimCode == "20",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(942,1537,1362,932,549, 1379, 1440,1412,567, 1582, 1785,1763,431,1843,1487,457,111,87,112,1474,322), cselect]<-env_orig[!is.na(env_orig$SedimCode) &  env_orig$SedimCode == "40",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(1922,1878,1649,1887,1888,231,1929), cselect]<-data.frame(50,95,5,0,0,0)
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(1521,2443,1230, 1466,631,1512,1509,2454,1987, 498 , 1196), cselect]<-data.frame(60,70,29,1,0,0)#env_orig[env_orig$SedimCode == "60",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(209,1096, 931, 421,257,2472,1549,2458,2537,844, 1114,1129,1574, 1554,388,838), cselect]<-env_orig[!is.na(env_orig$SedimCode) &  env_orig$SedimCode == "80",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(280,117,1119,2496, 613,636,494,1052,1008,1046, 379,849), cselect]<-data.frame(90,29,70,1,0,0)#90
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(793, 1238, 1094), cselect]<-env_orig[!is.na(env_orig$SedimCode)  & env_orig$SedimCode == "100",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(2807,2778,2797,1641,1982), cselect]<-data.frame(110,82,6,12,0,0)
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(1982,1503,1723,755,1400,542,573,534,1290,863,657,1078), cselect]<-env_orig[!is.na(env_orig$SedimCode) &  env_orig$SedimCode == "115",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c(970,1579,907,763,523,578,1553,916,1814,754, 276, 1257, 758, 422), cselect]<-env_orig[!is.na(env_orig$SedimCode) &  env_orig$SedimCode == "120",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c("743"), cselect]<-env_orig[!is.na(env_orig$SedimCode) &env_orig$SedimCode == "130",cselect][1,]
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c("667","92"), cselect]<-data.frame(150,10,34,50,0,0)
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no == "1035", cselect]<-env_orig[!is.na(env_orig$SedimCode) & env_orig$SedimCode == "160",cselect][1,]
+env_orig[!is.na(env_orig$SedimCode) & env_orig$SedimCode == "160",cselect]<-data.frame(160, 4, 46,50,0,0)
+
+env_orig[!is.na(env_orig$refstation_no) & env_orig$refstation_no %in% c("2509"), cselect]<-data.frame(206, 35, 20, 40, 5, 0)
+
+P_mud<-ggplot(env_orig, aes(mud_2, grainsize_percent))+geom_text(aes(label = refstation_no))+
+  geom_abline(intercept = 0, slope = 1)+
+  geom_hline(yintercept = c(2, 30), color = "red")+
+  geom_vline(xintercept = c(2, 30), color = "red")
+
+P_sand<-ggplot(env_orig, aes(sand_2, percent_sand))+geom_text(aes(label = refstation_no))+ 
+  geom_abline(intercept = 0, slope = 1)+
+  geom_hline(yintercept = c(2, 50,90), color = "red")+
+  geom_vline(xintercept = c(2, 50,90), color = "red")
+
+
+P_gravel<-ggplot(env_orig, aes(gravel_2, percent_gravel))+geom_text(aes(label = refstation_no))+
+  geom_abline(intercept = 0, slope = 1)+
+  geom_hline(yintercept = c(2, 30), color = "red")+
+  geom_vline(xintercept = c(2, 30), color = "red")
+
+#
+P_mud
+P_sand
+P_gravel
+```
+
+### Data cleaning
+```{r}
+joinedDat<- left_join(otu_Sel_w,env_orig, by="refstation_no")
+
+ChosenEnvVar<- c("bathy_50", "mud_2")
+
+## Removing NAs
+otuCompl <- joinedDat[complete.cases(joinedDat[, c('lon_mid_dec', 'lat_mid_dec', ChosenEnvVar )]), c(1:(which(names(joinedDat) == "bathy")-1))]
+envCompl <- joinedDat[complete.cases(joinedDat[,  c('lon_mid_dec', 'lat_mid_dec',ChosenEnvVar )]), c(1,(which(names(joinedDat) == "bathy")):ncol(joinedDat))]
+
+temp_dates<-otu_orig %>%
+  dplyr::select(refstation_no, datetime_start) %>%
+  dplyr::group_by(refstation_no) %>%
+  summarise(across(everything(), mean, na.rm = TRUE)) %>%
+  data.frame()
+temp_dates$refstation_no<-as.factor(temp_dates$refstation_no)
+
+envCompl<- left_join(envCompl,temp_dates, by="refstation_no")
+```
+
+
+
+# Plotting
+### Point maps
+####Temporal variation in sampling
+```{r}
+P_Time<-ggplot()+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec, color = datetime_start))+
+  scale_color_gradientn(colors = rainbow(4), trans = "time")+
+  theme_classic()
+
+P_Month<-ggplot()+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec, color = as.factor(month(datetime_start))))+
+  scale_colour_manual(values=c("#dcff66",'#8ac926', "#fdc500","#eb6424","#e63946","#ff70a6","#e0b1cb","#0466c8", '#4cc9f0'))+
+  theme_classic()
+
+P_Month
+P_Time
+```
+
+####Temperature
+```{r}
+P_temp<-ggplot()+
+    geom_point(data = envCompl[!is.na(envCompl$temp_mean_2),], aes(lon_mid_dec,lat_mid_dec, color = temp_mean_2), shape = 1)+
+    geom_point(data = envCompl[is.na(envCompl$temp_mean_2),], aes(lon_mid_dec,lat_mid_dec), color = "black")+
+    scale_color_gradientn(colors = rev(rainbow(4)))+
+    theme_classic()
+
+P_tempDiff<-ggplot()+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec, color = temp_mean_2-bottom_temperature, shape = is.na(temp_mean_2)))+
+  scale_color_gradient2()+
+  scale_shape_manual(values = c(16,1))+
+  theme_classic()
+P_temp
+P_tempDiff
+```
+
+#### Bathymetry
+```{r}
+P_bathy<-ggplot()+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec, color = bathy_50), shape = 1)+
+  geom_point(data = envCompl[is.na(envCompl$bathy_50),], aes(lon_mid_dec,lat_mid_dec), color = "red")+
+  scale_color_viridis_c()+
+  theme_classic()
+
+P_bathyDiff<-ggplot()+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec), color = "darkblue", shape = 1)+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec, color = bathy_50- (bot_aver_depth* -1), shape = is.na(bathy_50)), alpha = 0.5)+
+  scale_color_gradient2()+
+  scale_shape_manual(values = c(16,1))+
+  theme_classic()
+P_bathy
+P_bathyDiff
+```
+
+#### Sediments
+```{r}
+P_sedi<- ggplot()+
+  #geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec), color = "darkblue", shape = 1)+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec, color = mud_2, shape = is.na(mud_2)))+
+  scale_color_gradient2()+
+  scale_shape_manual(values = c(16,1))+
+  scale_color_viridis_c(option = "magma")+
+  theme_classic()
+
+P_sediDiff<-ggplot()+
+  geom_point(data = envCompl, aes(lon_mid_dec,lat_mid_dec, color = mud_2-grainsize_percent, shape = is.na(grainsize_percent)))+
+  scale_color_gradient2()+
+  scale_shape_manual(values = c(16,1))+
+  theme_classic()
+
+P_sedi
+P_sediDiff
+```
+
+
+
+# Phylogenetic tree
+### Including all
+```{r}
+Occs<-colSums(otu_Sel_w[,-1]>0, na.rm = TRUE)
+
+temp_sp<-Taxonomic_DF
+temp_sp$Species <-gsub(";", ".", temp_sp$Species)
+temp_sp$Species <-gsub("[ /]", "_", temp_sp$Species)
+temp_sp$Species <-gsub("[(]", "-", temp_sp$Species)
+temp_sp$Species <-gsub("[)]", "-", temp_sp$Species)
+
+temp_sp<-temp_sp[temp_sp$Species %in% colnames(otu_Sel_w),]
+temp_sp<-unique(temp_sp[,-1])
+#temp_sp$Species<-as.factor(temp_sp$Species)
+
+# Step 1: Create a unique path for each row based on taxonomy
+taxonomy_levels <- c("Phylum", "Subphylum", "Superclass", "Class", "Subclass",
+                     "Infraclass", "Superorder", "Order", "Suborder",
+                     "Infraorder", "Superfamily", "Family", "Subfamily",
+                     "Infrafamily", "Genus", "Species")
+temp_sp_hollow<-temp_sp %>%
+    mutate(across(everything(), as.character))
+for(i in ncol(temp_sp_hollow):2){
+ temp_sp_hollow[,i] <-ifelse(temp_sp_hollow[,i]  == temp_sp_hollow[, (i-1)], NA, temp_sp_hollow[,i])
+}
+# Replace NAs with "Unknown" to keep path intact
+temp_sp_hollow <- temp_sp_hollow %>%
+  mutate(across(all_of(taxonomy_levels), ~ ifelse(is.na(.), "", .))) %>%
+  unite("pathString", all_of(taxonomy_levels), sep = "/", remove = FALSE)
+
+# Step 2: Create a tree using the data.tree package
+tax_tree <- as.Node(temp_sp_hollow)
+
+# Step 3: Convert data.tree to phylo object using ape
+phylo_tree <- as.phylo.Node(tax_tree) 
+
+phylo_tree$node.label <-ifelse(phylo_tree$node.label %in% temp_sp$Species, phylo_tree$node.label, NA)
+phylo_tree$node.label<-ifelse(duplicated(phylo_tree$node.label), NA, phylo_tree$node.label)
+
+
+phylo_tree$node.label<-ifelse(!is.na(phylo_tree$node.label), paste(phylo_tree$node.label, Occs[match(phylo_tree$node.label, names(Occs))], sep= "_"), NA)
+
+#phylo_tree$edge.length<-node.depth(phylo_tree, method = 1)
+#phylo_tree$edge.length<-node.depth.edgelength(phylo_tree)
+
+# Step 4: Plot the tree
+plot(phylo_tree, show.node.label = TRUE, cex = 0.7)
+
+temp_sp$class_colors<-NA
+for(i in 1:length(unique(temp_sp$Class))){
+  temp_sp$class_colors<-ifelse(temp_sp$Class ==   unique(temp_sp$Class)[i]
+                               , pastel_colors <- c(
+  "#A99BA0", "#F2F1F2", "#FB8A92", "#FB8AF0", "#98FF9E", "#9ECBF9", "#FECB7F",
+  "#D179A0", "#A6FFF3", "#C0CF8A", "#9EEAFF", "#E9C8FD", "#D29CFC", "#FACDCA",
+  "#91A6CE", "#D78B71", "#88CFA9", "#C7B176", "#D988C2", "#FCF38D", "#95DEB2",
+  "#FA92C4", "#FC9BD5", "#B6A3E5"
+)[i], temp_sp$class_colors)
+}
+
+Branch_col<-data.frame(phylo_tree$edge, "Branch_col"= NA, "Taxa" = NA)
+for(i in 1:length(phylo_tree$tip.label)){ 
+  if(i == 1){  
+    Branch_col[1:which(Branch_col[,2] == i),3]<-temp_sp[i,ncol(temp_sp)]
+    Branch_col[1:which(Branch_col[,2] == i),4]<-paste(temp_sp[i,"Class"])
+    next}
+  Branch_col[(which(Branch_col[,2] == (i-1))+1):which(Branch_col[,2] == i),3]<- temp_sp[temp_sp$Species == phylo_tree$tip.label[i], ncol(temp_sp)]
+  
+  Branch_col[(which(Branch_col[,2] == (i-1))+1):which(Branch_col[,2] == i),4]<- paste(temp_sp[temp_sp$Species == phylo_tree$tip.label[i], "Class"])
+}
+
+phylo_tree$tip.label<-paste(phylo_tree$tip.label, Occs[match(phylo_tree$tip.label, names(Occs))], sep= "_")
+
+
+pdf(file = "Grabs_PhyloTreeXL.pdf",   # The directory you want to save the file in
+    width = 10, # The width of the plot in inches
+    height = 35)
+op <- par(mar = c(0,0,0,0), oma=  c(0,0,0,0))
+plot(phylo_tree,
+     cex=0.5,
+     show.node.label = TRUE,
+     edge.color= Branch_col$Branch_col)
+# legend("topleft",
+#        #inset=c(-0.05,0),
+#        bg='white',
+#        legend = unique(Branch_col[,3:4])[,2], #Name of groups
+#        col = unique(Branch_col[,3:4])[,1], # Color of the squares
+#        cex =.2, #sets legend size
+#        lwd=2#, #sets line weight
+#        #xpd=TRUE
+# ) #places outside plot are
+dev.off()
+```
+
+## Removing redundancy
+```{r}
+# ggplot(envCompl, aes(lon_mid_dec, lat_mid_dec))+
+# geom_point(aes(color = otuCompl$Drilonereis_filum  >0, shape = otuCompl$Drilonereis  >0))+
+# scale_shape_manual(values = c(1, 16))
+ SpExclude1<-c("refstation_no", "Thenea", "Asbestopluma", "Asbestopluma_-Asbestopluma-_pennatula", "Sycon", "Sycon_abyssale", "Cadulus_jeffreysii", "Antalis", "Trochoidea", "Dentaliidae", "Solariella_obscura", "Margarites_olivaceus", "Anatoma_crispata", "Puncturella_noachina", "Lepeta_caeca", "Pteropoda", "Cylichna_alba", "Cephalaspidea", "Mangeliidae", "Curtitoma", "Buccinidae", "Eulima_bilineata", "Punctulum_wyvillethomsoni", "Eulimidae", "Rissoidae", "Alvania", "Naticidae", "Nucula_nucleus", "Nuculoidea", "Yoldiella", "Similipecten", "Pectinoidea", "Anomiidae", "Anomioidea", "Dacrydium", "Limatula", "Bathyarca", "Thyasira", "Thyasiridae", "Mendicula", "Montacutinae", "Lasaeidae", "Abra", "Hiatella", "Astarte", "Thracia", "Cuspidaria", "Cuspidariidae", "Cardiomya", "Labidoplax_buskii", "Myriotrochidae", "Echinocucumis", "Echinocyamus", "Spatangia", "Spatangidae", "Spatangoida", "Irregularia", "Echinocardium", "Odontophora", "Echinidea", "Camarodonta", "Comatulida", "Articulata", "Ophiacantha", "Ophiacanthidae", "Amphiura","Amphiuridae", "Amphipholis", "Amphilepis", "Ophiura", "Ophiurida", "Ophiuridae", "Ophiocten", "Eudendrium", "Paxillosida", "Octocorallia", "Hydroidolina", "Kophobelemnon_stelliferum","Nephtheidae", "Epizoanthus_papillosus", "Epizoanthidae", "Zoantharia", "Cerianthidae","Ceriantharia",  "Hexacorallia", "Actiniaria", "Styelidae", "Molgula", "Aplousobranchia", "Cyclostomatida", "Horneridae", "Cirripedia", "Thoracica", "Erythrops", "Mysidae", "Arcturidae", "Astacilla", "Gnathia_oxyuraea","Gnathiidae", "Caecognathia", "Cirolanidae", "Eurydice", "Isopoda","Cymothoida", "Calathura", "Anthuroidea", "Leptanthuridae", "Ilyarachna","Ilyarachninae", "Munnopsidae", "Eurycopinae", "Munna", "Janira_maculosa", "Janiroidea", "Asellota", "Ischnomesus_bispinosus", "Peracarida", "Nannastacidae", "Leucon", "Leuconidae", "Eudorella", "Leuconidae", "Cumacea", "Lampropidae", "Eudorella", "Hemilamprops","Diastylis", "Diastylidae", "Photidae", "Gammaropsis_melanops", "Ischyrocerus", "Ischyroceridae", "Podoceridae","Caprelloidea", "Unciola","Unciolinae", "Unciolidae", "Syrrhoe", "Synopiidae", "Amphipoda", "Haploops", "Byblis_gaimardii", "Ampeliscidae", "Ampelisca","Tmetonyx_cicada", "Lysianassoidea", "Lysianassidae", "Hippomedon", "Urothoe", "Phoxocephalidae", "Harpinia", "Pardaliscidae", "Nicippe", "Melphidippidae", "Nototropis", "Westwoodilla", "Atylidae", "Oedicerotidae")
+   
+  SpExclude2<- c("Liljeborgia", "Liljeborgiidae", "Eusirus", "Amphilochus_manudens", "Amphilochus", "Caridea", "Decapoda", "Pleocyemata", "Anomura", "Munida_sarsi", "Nymphon", "Spiochaetopterus", "Chaetopteridae", "Scalibregma", "Scalibregmatidae", "Asclerocheilus_intermedius", "Paradoneis", "Levinsenia", "Cirrophorus", "Paraonidae", "Aricidea", "Scoloplos_armiger", "Phylo", "Orbiniidae", "Leitoscoloplos", "Opheliidae", "Ophelina", "Rhodine", "Notoproctus", "Nicomachinae", "Nicomache", "Maldane", "Maldanidae", "Lumbriclymeninae", "Lumbriclymene", "Praxillella", "Euclymeninae", "Euclymene", "Clymenura", "Notomastus", "Capitellidae", "Capitella", "Heteromastus", "Trichobranchidae", "Terebellides", "Octobranchus", "Thelepus", "Streblosoma_intestinale", "Proclea_graffii", "Polycirrus", "Terebellidae", "Pista", "Terebellinae", "Neoamphitrite", "Lysilla_loveni", "Eupolymnia_nesidensis", "Terebelliformia", "Pectinariidae", "Melinna", "Ampharetinae", "Anobothrus", "Amphicteis_gunneri", "Ampharetidae", "Ampharete", "Saphobranchia", "Pherusa_plumosa", "Flabelligeridae", "Diplocirrus", "Bradabyssa_villosa", "Tharyx", "Dodecaceria_concharum", "Cirratulidae", "Chaetozone", "Spiophanes", "Spio", "Scolelepis_korsuni", "Pseudopolydora", "Prionospio", "Spionidae", "Malacoceros", "Laonice", "Spioniformia", "Dipolydora_coeca", "Poecilochaetus", "Serpulidae", "Sabellida", "Jasmineira", "Sabellidae", "Euchone", "Chone", "Owenia", "Myriochele", "Oweniidae", "Galathowenia", "Phyllodoce_groenlandica", "Phyllodocidae", "Protomystides_exigua", "Eulalia", "Sphaerodoridae", "Sphaerodorum", "Nephtys", "Nephtyidae", "Aglaophamus", "Trypanosyllis", "Syllis_cornuta", "Syllidae", "Exogoninae", "Exogone", "Pionosyllis", "Nereis", "Syllidia", "Hesionidae", "Goniadidae", "Goniada", "Glyceridae", "Glycera", "Sigalionidae", "Pholoe", "Harmothoe_fragilis", "Eunoe", "Polynoidae", "Bylgides", "Laetmonice_filicornis", "Aphroditidae", "Laetmonice_filicornis", "Paradiopatra", "Onuphidae", "Nothria", "Oenonidae", "Drilonereis", "Lumbrineris", "Lumbrineridae", "Augeneria", "Scoletoma", "Abyssoninoe", "Eunice", "Dorvilleidae", "Protodorvillea", "Paramphinome", "Phascolion", "Onchnesoma", "Golfingiidae", "Golfingia")
+
+otu<-otuCompl[, !(colnames(otuCompl) %in% c(SpExclude1, SpExclude2))]  
+
+Occs<-colSums(otu[,-1]>0, na.rm = TRUE)
+
+temp_sp<-temp_sp[temp_sp$Species %in% colnames(otu),]
+temp_sp<-unique(temp_sp[,-1])
+
+taxonomy_levels <- c("Phylum", "Subphylum", "Superclass", "Class", "Subclass",
+                     "Infraclass", "Superorder", "Order", "Suborder",
+                     "Infraorder", "Superfamily", "Family", "Subfamily",
+                     "Infrafamily", "Genus", "Species")
+temp_sp_hollow<-temp_sp %>%
+    mutate(across(everything(), as.character))
+for(i in ncol(temp_sp_hollow):2){
+ temp_sp_hollow[,i] <-ifelse(temp_sp_hollow[,i]  == temp_sp_hollow[, (i-1)], NA, temp_sp_hollow[,i])
+}
+# Replace NAs with "Unknown" to keep path intact
+temp_sp_hollow <- temp_sp_hollow %>%
+  mutate(across(all_of(taxonomy_levels), ~ ifelse(is.na(.), "", .))) %>%
+  unite("pathString", all_of(taxonomy_levels), sep = "/", remove = FALSE)
+
+# Step 2: Create a tree using the data.tree package
+tax_tree <- as.Node(temp_sp_hollow)
+
+# Step 3: Convert data.tree to phylo object using ape
+phylo_tree <- as.phylo.Node(tax_tree) 
+
+phylo_tree$node.label <-ifelse(phylo_tree$node.label %in% temp_sp$Species, phylo_tree$node.label, NA)
+phylo_tree$node.label<-ifelse(duplicated(phylo_tree$node.label), NA, phylo_tree$node.label)
+
+phylo_tree$node.label<-ifelse(!is.na(phylo_tree$node.label), paste(phylo_tree$node.label, Occs[match(phylo_tree$node.label, names(Occs))], sep= "_"), NA)
+
+# Step 4: Plot the tree
+plot(phylo_tree, show.node.label = TRUE, cex = 0.7)
+
+temp_sp$class_colors<-NA
+for(i in 1:length(unique(temp_sp$Class))){
+  temp_sp$class_colors<-ifelse(temp_sp$Class ==   unique(temp_sp$Class)[i]
+                               , pastel_colors <- c(
+  "#A99BA0", "#F2F1F2", "#FB8A92", "#FB8AF0", "#98FF9E", "#9ECBF9", "#FECB7F",
+  "#D179A0", "#A6FFF3", "#C0CF8A", "#9EEAFF", "#E9C8FD", "#D29CFC", "#FACDCA",
+  "#91A6CE", "#D78B71", "#88CFA9", "#C7B176", "#D988C2", "#FCF38D", "#95DEB2",
+  "#FA92C4", "#FC9BD5", "#B6A3E5"
+)[i], temp_sp$class_colors)
+}
+
+Branch_col<-data.frame(phylo_tree$edge, "Branch_col"= NA, "Taxa" = NA)
+for(i in 1:length(phylo_tree$tip.label)){ 
+  if(i == 1){  
+    Branch_col[1:which(Branch_col[,2] == i),3]<-temp_sp[i,ncol(temp_sp)]
+    Branch_col[1:which(Branch_col[,2] == i),4]<-paste(temp_sp[i,"Class"])
+    next}
+  Branch_col[(which(Branch_col[,2] == (i-1))+1):which(Branch_col[,2] == i),3]<- temp_sp[temp_sp$Species == phylo_tree$tip.label[i], ncol(temp_sp)]
+  
+  Branch_col[(which(Branch_col[,2] == (i-1))+1):which(Branch_col[,2] == i),4]<- paste(temp_sp[temp_sp$Species == phylo_tree$tip.label[i], "Class"])
+}
+
+phylo_tree$tip.label<-paste(phylo_tree$tip.label, Occs[match(phylo_tree$tip.label, names(Occs))], sep= "_")
+
+pdf(file = "Grabs_PhyloTreeXL_Clean.pdf",   # The directory you want to save the file in
+    width = 10, # The width of the plot in inches
+    height = 35)
+op <- par(mar = c(0,0,0,0), oma=  c(0,0,0,0))
+plot(phylo_tree,
+     cex=0.5,
+     show.node.label = TRUE,
+     edge.color= Branch_col$Branch_col)
+dev.off()
+```
+
+
+
+# Env transformations
+```{r}
+env<-envCompl
+# TRANSFORMATIONS 
+env$log_bot_aver_depth<-log(env$bot_aver_depth)
+
+env$log_qslope_3<-log(env$qslope_3)
+env$log_qslope_21<-log(env$qslope_21)
+
+env$log_adjSD_3<-log(env$adjSD_3)
+env$log_adjSD_21<-log(env$adjSD_21)
+
+env$CoarseSedim<-rowSums(env[,c('gravel','cobB','rock')])
+#env$Cspeed_2
+#env$CDirection_2
+```
+
+
+# SAVE files
+```{r}
+if(TRUE){
+  setwd("C:/Users/a39495/Documents/Projects/MAREANO_Grabs/")
+  save(phylo_tree, file = paste0("phylo_tree_Grabs.rda"))
+  save(Branch_col, file = paste0("temp/Branch_col_Grabs_.rda"))
+  save(otu, file = "otu_Grabs.rda")
+  save(env, file = "env_Grabs.rda")
+}
+```
