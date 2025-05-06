@@ -25,6 +25,10 @@ library(lubridate)
 library(tidyverse)
 library(ape)
 library(data.tree)
+
+HIusername<-"a39495"
+WhereRun<-"Server"
+
 ```
 
 # Minumim species occurrence thresholds
@@ -37,8 +41,7 @@ MinSightings<- 14 # Minimum number of times an OTU has been sampled
 ## -Biological data
 Loads all physical data but will later subsets the gear of interest, i.e., defined by "GEAR" 
 ```{r, warning=FALSE, echo=FALSE, message=FALSE}
-WhereRun<-"Server"
-if(WhereRun == "Locally"){tempPath<-"C:/Users/a39495/OneDrive - Havforskningsinstituttet/General/inputs/grab/"}
+if(WhereRun == "Locally"){tempPath<-paste0("C:/Users/",HIusername,"/OneDrive - Havforskningsinstituttet/General/inputs/grab/")}
 if(WhereRun == "Server"){  tempPath<-"U:/Mareano/ARTSOPPARBEIDING/"}
 
 Grab_temp<-read_excel(paste0(tempPath,"ArterPunchetPr20250502_totalopparbeidet_tom_2024.xlsx"), sheet = "Grab", col_names = TRUE)
@@ -94,7 +97,7 @@ otu_Sel_w<-otu_Sel_w[, colnames(otu_Sel_w) != "NA"]
 
 
 ```{r}
-load("Taxonomic_DF_grabs_2025.rda")
+load(paste0(tempPath,"Taxonomic_DF_grabs_2025.rda"))
 
 Taxonomic_DF_Groups<-Taxonomic_DF
 for(i in 1:nrow(Taxonomic_DF_Groups)){
@@ -210,8 +213,7 @@ RightCoords<-otu_Sel[match(otu_Sel_w$refstation_no,otu_Sel$refstation_no),c('lon
 
 ## -Environmental data 
 ```{r, warning=FALSE}
-#load(paste0(tempPath,"new_env_orig_15-01-24.rda")) # from "Extract_EnvData.R"
-load("C:/Users/a39495/OneDrive - Havforskningsinstituttet/General/inputs/grab/new_env_orig_02-04-25.rda") 
+load(paste0("C:/Users/",HIusername,"/OneDrive - Havforskningsinstituttet/General/inputs/grab/new_env_orig_02-04-25.rda")) 
 
 env_orig$refstation_no<-as.factor(str_split_fixed(env_orig$SampID, "_",3)[,1])
 
@@ -583,8 +585,8 @@ env$CoarseSedim<-rowSums(env[,c('gravel','cobB','rock')])
 
 # SAVE files
 ```{r}
-if(TRUE){
-  setwd("C:/Users/a39495/Documents/Projects/MAREANO_Grabs/")
+if(FALSE){
+  #setwd(paste0("C:/Users/",HIusername, "/Documents/Projects/MAREANO_Grabs/"))
   save(phylo_tree, file = paste0("phylo_tree_Grabs.rda"))
   save(Branch_col, file = paste0("temp/Branch_col_Grabs_.rda"))
   save(otu, file = "otu_Grabs.rda")
